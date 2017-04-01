@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+
+shopt -s extglob nullglob globstar
+
+################################################################################
+
+# Any of these patterns will be removed from a filename before extracting its
+# first number
+NON_NUMBERS=()
+# mpv binary
+MPV=( ${MPV:-mpv} )
+# Additional options to pass to mpv
+MPV_OPTS=( --save-position-on-quit )
+# List of media files extensions
+MEDIA_EXTS=( mkv mp4 avi )
+# List of subtitle files extensions (copied from mpv’s sub/find_subfiles.c)
+SUB_EXTS=( utf{,8,-8} idx sub srt smi rt txt ssa aqt jss js ass mks vtt sup )
+# List of external audio extensions (copied from mpv’s sub/find_subfiles.c)
+AUDIO_EXTS=( mp3 aac mka dts flac ogg m4a ac3 )
+# mpv’s path separator: set to ‘;’ if mpv was compiled with -DHAVE_DOS_PATHS and
+# to ‘:’ otherwise.
+MPV_PATH_SEP=':'
+
+################################################################################
+
+# A “filename → first number” dictionary
+typeset -A _EFN_CACHE=()
+# List of media files
+_MPV_FILES=()
+# List of media files with per-file options to pass to mpv
+_MPV_PER_FILE_OPTS=()
+# Extensions globs, form is “@(ext1|ext2|…|EXT1|EXT2|…)”.
+unset _SUB_EXT_GLOB
+unset _AUDIO_EXT_GLOB
+unset _MEDIA_EXT_GLOB
+
+################################################################################
+
+# Makes $_ans a reference to a variable passed as $1 and then invokes a function
+# with arguments passed as the rest.
+# TAKES:
+#     $1 — variable name to assign answer to
+# [rest] — function and, optionally, arguments
+ret() {
+    declare -n _ans=$1
+    "${@:2}"
+}
+
+################################################################################
+
+# Constructs a glob of @(ext1|ext2|…|EXT1|EXT2|…) form and assigns it to $_ans.
+# Note that the behaviour is undefined if no extensions are passed.
+# TAKES:
+#     $@ — extensions
+make_extension_glob_() {
+    # — %q → shell-escapes a string
+    # — ${@,,}, ${@^^} → lower- and uppercased arguments respectively
+    # — printf re-uses its format to consume all of the arguments
+    printf -v _ans '%q|' "${@,,}" "${@^^}"
+    # Now $_ans is something like “jpg|mp3|JPG|MP3|”, so we want to drop the
+    # trailing “|” and cover it into “@()”.
+    printf -v _ans '@(%s)' "${_ans%|}"
+}
+
+# Removes
+#     1) all the trailing “/”
+#     2) directory
+#     3) extension
+#     4) all patterns from NON_NUMBERS
+# from a filename, and then assigns its first number (or “-1”) to $_ans.
+# TAKES:
+#     $1 — file name
+extract_first_number_() {
+    local pattern basename=$1 orig_basename=$1
+
+    # In some reason this is slightly faster than “[[ -v … ]]”.
+    if [[ -n ${_EFN_CACHE[$orig_basename]+t} ]]; then
+        _ans=${_EFN_CACHE[$orig_basename]}
+        return
+    fi
+
+    basename=${basename%%/}
+    basename=${basename##*/}
+    basename=${basename%.*}
+
+    for pattern in "${NON_NUMBERS[@]}"; do
+        basename=${basename/$pattern/}
+    done
+    if [[ $basename =~ [0-9]+ ]]; then
+        # ${…##0} → drop leading zeroes
+        _ans=${BASH_REMATCH[0]##0}
+        # If all zeroes were dropped…
+        _ans=${_ans:-0}
+    else
+        _ans=-1
+    fi
+    _EFN_CACHE[$orig_basename]=$_ans
+}
+
+# Appends elements to array $_ans.
+# TAKES:
+#     $@ — elements to append to array
+append_to_array_() {
+    _ans+=( "$@" )
+}
+
+# Appends elements sorted by extract_first_number_ to array $_ans.
+# TAKES:
+#     $@ — elements to sort and append to array
+numeric_sort_and_apppend_to_array_() {
+    local columns
+
+    while IFS= read -rd '' columns; do
+        _ans+=( "${columns#* }" )
+    done < <(
+        for file; do
+            ret first_number extract_first_number_ "$file"
+            # shellcheck disable=SC2154
+            printf '%s %s\0' "$first_number" "$file"
+        done | sort -z -n -t' ' -k1,1)
+}
+
+# Adds all files from current directory with extension matches $_MEDIA_EXT_GLOB
+# to _MPV_FILES using specified function.
+# TAKES:
+#     $1 — function name
+find_media_files() {
+    # shellcheck disable=SC2035,SC2086
+    ret _MPV_FILES "$1" *.$_MEDIA_EXT_GLOB
+}
+
+# If called without seconds argument, adds all files from current directory or
+# its subdirectory with extension matches $_MEDIA_EXT_GLOB to _MPV_FILES using
+# specified function.
+# TAKES:
+#     $1  — function name
+#    [$2] — directory, with trailing “/” (internal use)
+find_media_files_recursively() {
+    local func=$1 prefix=$2
+
+    # shellcheck disable=SC2086
+    ret _MPV_FILES "$func" "$prefix"*.$_MEDIA_EXT_GLOB
+
+    local -a sorted_dirs
+    ret sorted_dirs "$func" "$prefix"*/
+
+    local dir
+    for dir in "${sorted_dirs[@]}"; do
+        find_media_files_recursively "$func" "$dir"
+    done
+}
+
+# Finds directories with subtitles and adds --sub-paths=… to MPV_OPTS.
+pass_subpaths() {
+    local -A sub_paths_hash
+    local sub sub_paths path
+    # */**/… → at least 1-directory depth
+    for sub in */**/*.$_SUB_EXT_GLOB; do
+        # Is that really a file?
+        [[ -f $sub ]] || continue
+        sub_paths_hash[${sub%/*}]=
+    done
+    if (( !${#sub_paths_hash[@]} )); then
+        return
+    fi
+    for path in "${!sub_paths_hash[@]}"; do
+        if [[ $path == *"$MPV_PATH_SEP"* ]]; then
+            echo >&2 "W: sub-path '$path' contains '$MPV_PATH_SEP' and thus" \
+                     "will not be passed."
+            continue
+        fi
+        sub_paths+=${sub_paths:+"$MPV_PATH_SEP"}$path
+    done
+    MPV_OPTS+=( --sub-paths="$sub_paths" )
+}
+
+# Generates _MPV_PER_FILE_OPTS from _MPV_FILES.
+generate_per_file_opts() {
+    local file
+    local -a options
+
+    # TAKES:
+    #     $1 — option name, with leading “--”
+    #     $2 — extension glob
+    add_something_numeric() {
+        local option=$1 extglob=$2
+        local media_first_number smth_first_number prefix smth
+        ret media_first_number extract_first_number_ "$file"
+        if (( media_first_number == -1 )); then
+            return
+        fi
+        case "$file" in
+            */*) prefix=${file%/*}/ ;;
+            *)   prefix='' ;;
+        esac
+        for smth in "$prefix"**/*"$media_first_number"*.$extglob; do
+            # Is that really a file?
+            [[ -f $smth ]] || continue
+            ret smth_first_number extract_first_number_ "$smth"
+            if (( media_first_number == smth_first_number )); then
+                options+=( "$option=$smth" )
+            fi
+        done
+    }
+
+    # TAKES:
+    #     $1 — option name, with leading “--”
+    #     $2 — extension glob
+    add_something_exact() {
+        local option=$1 extglob=$2
+        local prefix smth
+        case "$file" in
+            */*) prefix=${file%/*}/ ;;
+            *)   prefix='' ;;
+        esac
+        # */**/… → at least 1-directory depth
+        for smth in "$prefix"*/**/"${file%.*}".$extglob; do
+            # Is that really a file?
+            [[ -f $smth ]] || continue
+            options+=( "$option=$smth" )
+        done
+    }
+
+    for file in "${_MPV_FILES[@]}"; do
+        # Is that really a file?
+        [[ -f $file ]] || continue
+        options=()
+
+        if (( opt_flag_sub_numeric_match )); then
+            add_something_numeric --sub-file "$_SUB_EXT_GLOB"
+        fi
+        if (( opt_flag_audio_numeric_match )); then
+            add_something_numeric --audio-file "$_AUDIO_EXT_GLOB"
+        fi
+        if (( opt_flag_audio_exact_match )); then
+            add_something_exact --audio-file "$_AUDIO_EXT_GLOB"
+        fi
+
+        if [[ $file == -* ]]; then
+            # mpv is having problems with resuming files passed with relative
+            # constructions in path (“./file”, “../file”), so we pass the
+            # absolute path instead.
+            file=$PWD/$file
+        fi
+        if (( ${#options[@]} )); then
+            _MPV_PER_FILE_OPTS+=( --\{ "${options[@]}" "$file" --\} )
+        else
+            _MPV_PER_FILE_OPTS+=( "$file" )
+        fi
+    done
+}
+
+################################################################################
+
+usage() {
+    cat >&2 <<EOF
+USAGE: ${0##*/} [-rnsSaA] [-p PROFILE]
+
+RC FILE
+    ~/.resumerc is sourced by this script, with the profile string (or
+    the string “default”) passed as the only argument.
+    From there file you can modify the following variables:
+
+        NON_NUMBERS — list of patterns that will be removed from a filename
+            before extracting its first number
+
+        MPV — mpv binary
+
+        MPV_OPTS — additional options to pass to mpv
+
+        MEDIA_EXTS — list of media files extensions
+
+        SUB_EXTS — list of subtitle files extensions
+
+        AUDIO_EXTS — list of external audio files extensions
+
+        MPV_PATH_SEP — mpv’s path separator: set to ‘;’ if mpv was compiled with
+            -DHAVE_DOS_PATHS and to ‘:’ otherwise
+
+    You can also change shell options, e. g.
+        shopt -s dotglob
+    will make the script search media, subtitles and audio files among dotfiles
+    (files start with “.”).
+
+OPTIONS
+    -r   enable recursive match for media files
+    -n   enable numeric sort (that is, sort media files by their first numbers)
+    -s   find and pass 'sub-paths'
+    -S   find and pass subtitle files which first numbers match media files ones
+    -a   find and pass audio files which names match media files names
+    -A   find and pass audio files which first numbers match media files ones
+    -p … specify script profile
+EOF
+    exit 2
+}
+
+opt_flag_recursive=0
+opt_flag_numeric_sort=0
+opt_flag_pass_subpaths=0
+opt_flag_sub_numeric_match=0
+opt_flag_audio_exact_match=0
+opt_flag_audio_numeric_match=0
+unset opt_profile
+
+while getopts 'rnsSaAp:' option; do
+    case "$option" in
+        r) opt_flag_recursive=1 ;;
+        n) opt_flag_numeric_sort=1 ;;
+        s) opt_flag_pass_subpaths=1 ;;
+        S) opt_flag_sub_numeric_match=1 ;;
+        a) opt_flag_audio_exact_match=1 ;;
+        A) opt_flag_audio_numeric_match=1 ;;
+        p) opt_profile=$OPTARG ;;
+        *) usage ;;
+    esac
+done
+
+if [[ -f ~/.resumerc ]]; then
+    source ~/.resumerc "${opt_profile-default}"
+elif [[ -v opt_profile ]]; then
+    echo >&2 "W: '-p' passed, but no rc file found."
+fi
+
+ret _SUB_EXT_GLOB   make_extension_glob_ "${SUB_EXTS[@]}"
+ret _AUDIO_EXT_GLOB make_extension_glob_ "${AUDIO_EXTS[@]}"
+ret _MEDIA_EXT_GLOB make_extension_glob_ "${MEDIA_EXTS[@]}"
+
+if (( opt_flag_numeric_sort )); then
+    func=numeric_sort_and_apppend_to_array_
+else
+    func=append_to_array_
+fi
+
+if (( opt_flag_recursive )); then
+    find_media_files_recursively "$func"
+else
+    find_media_files "$func"
+fi
+
+if (( opt_flag_pass_subpaths )); then
+    pass_subpaths
+fi
+
+generate_per_file_opts
+
+if (( ${#_MPV_PER_FILE_OPTS[@]} )); then
+    exec "${MPV[@]}" "${MPV_OPTS[@]}" "${_MPV_PER_FILE_OPTS[@]}"
+else
+    echo >&2 "E: no media files found."
+    exit 1
+fi

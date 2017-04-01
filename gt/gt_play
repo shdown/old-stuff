@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+import shutil
+import subprocess
+import argparse
+import itertools
+import tempfile
+import os
+from gt import network
+
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:39.0) Gecko/20100101 Firefox/39.0'
+
+PLAYERS = [
+    'mpv --no-ytdl', 'mplayer2', 'mplayer', 'amarok', 'audacious', 'banshee',
+    'clementine', 'deadbeef', 'exaile', 'rhythmbox', 'xmms', 'mpg123', 'bomi',
+    'dragon', 'kaffeine', 'parole', 'totem', 'vlc',
+]
+
+EXTENSION = 'mp3'
+
+def binary_exists(binary):
+    return shutil.which(binary) is not None
+
+def run(args):
+    subprocess.check_call(args)
+
+class DownloaderUnavailableException(BaseException):
+    pass
+
+class NothingDetectedException(BaseException):
+    pass
+
+def play(filename, try_before=None):
+    for player in itertools.chain(try_before or [], PLAYERS):
+        words = player.split()
+        if words and binary_exists(words[0]):
+            run(words + [filename])
+            return
+    raise NothingDetectedException('no player detected')
+
+def download_wget(url, out):
+    if not binary_exists('wget'):
+        raise DownloaderUnavailableException()
+    run(['wget', '-O', out, '-U', USER_AGENT, url])
+
+def download_curl(url, out):
+    if not binary_exists('curl'):
+        raise DownloaderUnavailableException()
+    run(['curl', '-L', '-o', out, '-A', USER_AGENT, url])
+
+def download(url, out):
+    for downloader in [download_wget, download_curl]:
+        try:
+            downloader(url, out)
+            return
+        except DownloaderUnavailableException:
+            pass
+    raise NothingDetectedException('no downloader detected')
+
+def get_filename(text, maxlen=128):
+    text = text.replace('/', '')
+    text = text.strip('.')
+    text = text[:maxlen]
+    return text
+
+def main():
+    parser = argparse.ArgumentParser('Google text-to-speech service client')
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument('-p', '--player',
+                         help='specify player binary')
+    actions.add_argument('-d', '--download',
+                         action='store_true',
+                         help='download, do not play')
+    actions.add_argument('-g', '--get-url',
+                         action='store_true',
+                         help='get voice URL, do not play (note that you need a browser User-Agent '
+                              'to access it)')
+    parser.add_argument('lang')
+    parser.add_argument('text', nargs='+')
+    args = parser.parse_args()
+
+    text = ' '.join(args.text)
+    url = network.get_voice_url(args.lang, text)
+
+    if args.get_url:
+        print(url)
+    elif args.download:
+        download(url, '{}.{}'.format(get_filename(text), EXTENSION))
+    else:
+        try_before = []
+        if args.player:
+            try_before.append(args.player)
+        try_before.append(os.getenv('PLAYER', ''))
+
+        with tempfile.NamedTemporaryFile(suffix='.' + EXTENSION) as tmp:
+            download(url, tmp.name)
+            play(tmp.name, try_before)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,3 @@
+[submodule "anitomy-cli/anitomy"]
+	path = anitomy-cli/anitomy
+	url = https://github.com/erengy/anitomy

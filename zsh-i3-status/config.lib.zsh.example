@@ -1,0 +1,225 @@
+#!/usr/bin/env zsh
+
+I3BAR_WIDGETS=( wintitle everything kblayout volume )
+I3BAR_CLICKEVENTS_LISTENER=i3bar_clickevents_listener
+
+i3bar_widget_everything() {
+    zmodload zsh/zselect
+    zmodload zsh/datetime
+
+    # Settings
+    interval=200
+    bat_prefix=/sys/class/power_supply/BAT0
+
+    # TAKES:
+    #     $1 — JSON segment
+    segment() {
+        [[ -n $output ]] && output+=','
+        output+=$1
+    }
+
+    # TAKES:
+    #     $1  — name
+    #     $2  — full_text
+    #     $3  — color
+    #    [$4] — instance
+    std_segment() {
+        segment "{\"name\":\"$1\",\"full_text\":\"[$2]\",\"color\":\"$3\",\"instance\":\"$4\",\"separator\":false}"
+    }
+
+    while true; do
+        output=
+
+        # Time
+        strftime -s time '%H:%M' "$EPOCHSECONDS"
+        std_segment time "$time" '#dc8cc3'
+
+        # Battery
+        while IFS='=' read -r key value; do
+            case $key in
+            POWER_SUPPLY_STATUS)   bat_status=$value ;;
+            POWER_SUPPLY_CAPACITY) bat_percent=$value ;;
+            esac
+        done < "$bat_prefix"/uevent
+        case "$bat_status" in
+        Full)
+            bat_symbol=
+            ;;
+        Charging)
+            bat_symbol='↑'
+            bat_color='#60b48a'
+            ;;
+        Discharging)
+            bat_symbol='↓'
+            bat_color='#dca3a3'
+            ;;
+        *)
+            bat_symbol='…'
+            bat_color='#dcdcdc'
+            ;;
+        esac
+        if [[ -n $bat_symbol ]]; then
+            std_segment bat "$bat_percent%$bat_symbol" "$bat_color"
+        fi
+
+        # Network
+        {
+            # Inter-|   Receive                                                |  Transmit
+            #  face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+            #   eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+            #  wlan0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+            #   ppp0: 6163212   11423    0    0    0     0          0         0  1620842   12853    0    0    0     0       0          0
+            #  wwan0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+            #     lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+            IFS= read -r
+            IFS= read -r
+            while IFS=' ' read -r iface rbytes x x x x x x x tbytes x x x x x x x; do
+                iface=${iface%:}
+                [[ $iface == lo* ]] && continue
+                (( rbytes == 0 || tbytes == 0 )) && continue
+                std_segment net "$iface" '#dcdcdc' "$iface"
+            done
+        } < /proc/net/dev
+
+        print -r -- "$output"
+        zselect -t "$interval"
+    done
+}
+
+i3bar_widget_kblayout() {
+    # Settings
+    xkb_switch=$WORKDIR/xkb-switch/xkb-switch
+
+    { $xkb_switch && $xkb_switch -W } | while IFS= read -r line; do
+        case "${line:0:2}" in
+        us)
+            line=En
+            color='#9c9c9c'
+            ;;
+        ru)
+            line=Ru
+            color='#eab93d'
+            ;;
+        *)
+            color='#ffffff'
+            ;;
+        esac
+        printf '{"name": "kblayout", "full_text": "[%s]", "color": "%s", "separator": false}\n' \
+            "$line" "$color"
+    done
+}
+
+i3bar_widget_volume() {
+    # Settings
+    alsawatch=$WORKDIR/alsawatch/alsawatch
+
+    $alsawatch | while IFS=' ' read -r mute volume; do
+        case $mute in
+        mute)
+            format='%.0smute'
+            color='#e03838'
+            ;;
+        *)
+            format='%3d%%'
+            color='#718ba6'
+            ;;
+        esac
+        printf '{"name": "vol", "full_text": "['"$format"']", "color": "%s", "separator": false}\n' \
+            "$volume" "$color"
+    done
+}
+
+i3bar_widget_wintitle() {
+    json_escape() {
+        local _var=$1 _ans=$2
+        _ans=${_ans//\\/\\\\}
+        _ans=${_ans//\"/\\\"}
+        _ans=${_ans//[$'\0'-$'\037']/_}
+        eval "$_var=\$_ans"
+    }
+
+    # Settings
+    xtitle=$WORKDIR/xtitle/xtitle
+
+    $xtitle -s | while IFS= read -r line; do
+        json_escape line "$line"
+        printf '{"name": "wintitle", "short_text": "…", "full_text": "%s", "color": "%s", "separator": false}\n' \
+            "$line" '#666666'
+    done
+}
+
+i3bar_clickevents_listener() {
+    # I wonder if this is the only way to empty an associative array in zsh.
+    unset clickparams
+    typeset -A clickparams
+
+    clickevent() {
+        case ${clickparams[name]} in
+        time)
+            (( ${clickparams[button]} != 1 )) && return
+            # https://developer.gnome.org/pango/stable/PangoMarkupFormat.html
+            # Should be escaped: '\' ';'
+            local body_start='<tt>' \
+                  body_end='</tt>' \
+                  hi_start='<span bgcolor="#dcdcdc" color="#2c2c2c">' \
+                  hi_end='</span>'
+            notify-send "$(date +'%B %Y')" \
+                        "$(ncal -bM \
+                | sed -r -e "1s;.*;$body_start;" -e "\$s;$;$body_end;" \
+                         -e "s;_\x08([ 0-9])_\x08([0-9]);$hi_start\1\2$hi_end;")"
+
+            ;;
+        bat)
+            (( ${clickparams[button]} != 1 )) && return
+            read -r current_now < /sys/class/power_supply/BAT0/current_now
+            read -r charge_now < /sys/class/power_supply/BAT0/charge_now
+            if (( current_now == 0 )); then
+                notify-send "Battery" "No current."
+            else
+                min_left=$(( 60 * charge_now / current_now ))
+                hmm=$(printf '%d:%02d' "$(( min_left / 60 ))" "$(( min_left % 60 ))")
+                notify-send "Battery" "<b>$hmm</b> left."
+            fi
+            ;;
+        net)
+            ;;
+        kblayout)
+            (( ${clickparams[button]} != 1 )) && return
+            $WORKDIR/xkb-switch/xkb-switch --next
+            ;;
+        vol)
+            case ${clickparams[button]} in
+                4) amixer set Master 1%+ ;;
+                5) amixer set Master 1%- ;;
+                1) urxvtc -title 'Alsamixer [make me float]' -e alsamixer ;;
+            esac
+            ;;
+        esac
+    }
+
+    setopt extended_glob
+    while IFS= read -r line; do
+        [[ $line == '[' ]] && continue
+        line=${line#,}
+        line=${line#\{}
+        line=${line%\}}
+        unset clickparams
+        typeset -A clickparams
+        while [[ $line == (#b)(\"(([^\"]#\\\")#[^\"]#)\":\ #((<->)|\"(([^\"]#\\\")#[^\"]#)\"))* ]]; do
+            # 1: whole segment
+            # 2: key
+            # 3: key (internal group)
+            # 4: value
+            # 5: numeric value
+            # 6: string value
+            # 7: string value (internal group)
+            clickparams[${match[2]}]=${match[5]:-${match[6]}}
+            line=${line:${#match[1]}}
+            line=${line#,}
+        done
+        if [[ -n $line ]]; then
+            print -r >&2 "W: can't parse '$line'."
+        fi
+        clickevent
+    done
+}

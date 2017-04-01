@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+
+set -e
+
+IFS= read -rd '' WORKDIR < <(dirname -z -- "$0")
+IFS= read -rd '' WORKDIR < <(readlink -ze -- "$WORKDIR")
+RESUME=$WORKDIR/resume
+if ! [[ -x $RESUME ]]; then
+    echo >&2 "E: '$RESUME' does not exist or is not an executable file."
+    exit 1
+fi
+TESTS_FILE=$WORKDIR/tests.bash
+
+FAKE_MPV='printf %s\0'
+FAKE_HOME=$(mktemp -d)
+OUTPUT_FILE=$FAKE_HOME/out
+TEST_RESULT_FILE=$FAKE_HOME/state
+
+TEST_FUNCS=()
+
+set +e
+
+################################################################################
+
+@fail() {
+    printf 'fail\n%s\n' "$*" > "$TEST_RESULT_FILE"
+    exit
+}
+
+@success() {
+    printf 'success\n%s\n' "$*" > "$TEST_RESULT_FILE"
+    exit
+}
+
+@skip() {
+    printf 'skip\n%s\n' "$*" > "$TEST_RESULT_FILE"
+    exit
+}
+
+################################################################################
+
+TEST_LOCAL_RESUME_ARGS=()
+
+setup() {
+    local file
+    for file; do
+        if [[ $file == */ ]]; then
+            mkdir -p -- "$file" || exit "$?"
+        else
+            if [[ $file == */* ]]; then
+                local dirname=${file%/*}
+                if ! [[ -d $dirname ]]; then
+                    mkdir -p -- "$dirname" || exit "$?"
+                fi
+            fi
+            true > "$file" || exit "$?"
+        fi
+    done
+}
+
+write_config() {
+    printf '%s\n' "$@" >> "$FAKE_HOME"/.resumerc || exit "$?"
+}
+
+set_arguments() {
+    TEST_LOCAL_RESUME_ARGS=( "$@" )
+}
+
+_run_resume() {
+    MPV=$FAKE_MPV HOME=$FAKE_HOME "$RESUME" "${TEST_LOCAL_RESUME_ARGS[@]}"
+}
+
+run_check_fail() {
+    _run_resume 2>/dev/null
+    local code=$?
+    (( code == 0 )) && @fail "run_check_fail() called, but exit code is 0"
+    @success "OK exit code is $code"
+}
+
+run_get_output() {
+    declare -n _ans=$1
+    _run_resume >"$OUTPUT_FILE"
+    local code=$?
+    (( code != 0 )) && @fail "non-zero exit code $code"
+    while IFS= read -rd '' line; do
+        _ans+=( "$line" )
+    done < "$OUTPUT_FILE"
+}
+
+run_check_output() {
+    local -a out
+    run_get_output out
+    local -i i
+    for (( i = 0; i < ${#out[@]}; ++i )); do
+        (( $# == 0 )) && @fail "found extra '${out[i]}'"
+        [[ $1 != "${out[i]}" ]] && @fail "expected '$1' found '${out[i]}'"
+        shift
+    done
+    (( $# != 0 )) && @fail "not found '$1'"
+    @success "OK everything matches"
+}
+
+setup_run_check_output() {
+    setup "$@"
+    run_check_output "$@"
+}
+
+################################################################################
+
+RED=$'\e[1;31m'
+GREEN=$'\e[1;32m'
+YELLOW=$'\e[1;33m'
+RESET=$'\e[0m'
+
+get_test_funcs() {
+    source "$TESTS_FILE" || return "$?"
+    local IFS=$'\n'
+    TEST_FUNCS=(
+        $(grep -o '^@test_[a-zA-Z0-9_]\+' "$TESTS_FILE" \
+            | grep -xFf <(declare -F | sed 's/^declare -f //')))
+}
+
+run_tests() {
+    local -i n_failed=0 n_succeed=0 n_skipped=0
+    local -i i
+    for (( i = 0; i < ${#TEST_FUNCS[@]}; ++i )); do
+        # truncate file
+        true > "$TEST_RESULT_FILE" || return "$?"
+        echo "MPV_OPTS=()" > "$FAKE_HOME"/.resumerc || exit "$?"
+
+        # declaration and assignation must be separated to not mask exit code
+        local test_root
+        test_root=$(mktemp -d) || return "$?"
+        ( cd -- "$test_root" && "${TEST_FUNCS[i]}" )
+        rm -rf -- "$test_root"
+
+        local state comment
+        {
+            IFS= read -r state
+            IFS= read -r comment
+        } < "$TEST_RESULT_FILE"
+
+        local header="$(( i + 1 ))/${#TEST_FUNCS[@]} '${TEST_FUNCS[i]}'"
+
+        case "$state" in
+            fail)
+                echo "$header ${RED}FAILED$RESET: $comment"
+                (( n_failed++ ))
+                ;;
+            success)
+                echo "$header ${GREEN}SUCCEED$RESET: $comment"
+                (( n_succeed++ ))
+                ;;
+            skip)
+                echo "$header ${YELLOW}SKIPPED$RESET: $comment"
+                (( n_skipped++ ))
+                ;;
+            '')
+                echo " *** Test $header called neither of @fail/@success/@skip."
+                echo " *** This is a bug. Aborting."
+                return 1
+                ;;
+            *)
+                echo " *** Test $header exited with unknown state '$state'."
+                echo " *** This is a bug. Aborting."
+                return 1
+                ;;
+        esac
+    done
+    echo " *** $n_succeed succeed, $n_failed failed, $n_skipped skipped ***"
+    if (( n_failed )); then
+        return 1
+    fi
+}
+
+cleanup_and_exit() {
+    rm -rf -- "$FAKE_HOME"
+    exit "$@"
+}
+
+get_test_funcs || cleanup_and_exit "$?"
+run_tests || cleanup_and_exit "$?"
+cleanup_and_exit

@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+
+# This is needed for select_binary_.
+IFS=$' \t\n'
+
+################################################################################
+
+# Makes $_ans a reference to a variable passed as $1 and then invokes a function
+# with arguments passed as the rest.
+# TAKES:
+#     $1 — variable name to return answer to
+# [rest] — function and, optionally, arguments
+ret() {
+    declare -n _ans=$1
+    "${@:2}"
+}
+
+################################################################################
+
+# Checks if $1 is a name of an existent binary.
+# TAKES:
+#     $1 — binary name
+# [rest] — (ignored)
+# RETURNS:
+#     0 — if $1 is a name of an existent binary
+#    >0 — otherwise
+has() {
+    command -v -- "$@" >/dev/null 2>/dev/null
+}
+
+# Replaces '\\' with '\', '\r' with <CR> and '\n' with <LF>.
+# TAKES:
+#     $1 — string to unescape
+vkmedia_unescape_() {
+    printf -v _ans %b "$1"
+}
+
+# Converts time in seconds to the MM:SS format.
+# TAKES:
+#     $1 — time in seconds
+to_mmss_() {
+    printf -v _ans '%02d:%02d' "$(( $1 / 60 ))" "$(( $1 % 60 ))"
+}
+
+# Bash-escapes strings and then joins them with space.
+# TAKES:
+#     $@ — strings to escape
+escape_for_bash_() {
+    printf -v _ans '%q ' "$@"
+    _ans=${_ans% }
+}
+
+# Returns a first argument (as array, split by $IFS) first field of which is
+# a name of an existent binary.
+# TAKES:
+#     $@ — commands with arguments separated by $IFS
+# RETURNS:
+#     0 — if binary was found
+#     1 — otherwise
+select_binary_() {
+    local binary
+    for binary; do
+        if has $binary; then
+            _ans=( $binary )
+            return
+        fi
+    done
+    return 1
+}
+
+# Selects a downloader. The result is an array you should append an output
+# filename and an URL to.
+# TAKES:
+#     $1 — User-Agent
+# RETURNS:
+#     0 — if downloader was found
+#     1 — otherwise.
+select_downloader_() {
+    if has wget; then
+        _ans=( wget -U "$1" -O )
+    elif has curl; then
+        _ans=( curl -L -A "$1" -o )
+    else
+        return 1
+    fi
+}
+
+# Makes a reasonable file name from a base and an extension.
+# TAKES:
+#     $1 - a base for a filename
+#     $2 - extension
+make_filename_() {
+    local base=$1 ext=$2
+    # Remove forward slashes
+    base=${base//\//}
+    # Remove leading dots
+    base=${base##.}
+    # Substitute "_" if the result is empty
+    base=${base:-_}
+    # Cut to 128 symbols
+    base=${base:0:128}
+    # Remove forward slashes
+    ext=${ext//\//}
+    # Cut to 8 symbols
+    ext=${ext:0:8}
+    # Combine
+    _ans=$base.$ext
+}
+
+# Extracts the extension of the last segment of an URL.
+# TAKES:
+#     $1 — URL
+get_url_extension_() {
+    local url=$1
+    # Remove the query part
+    url=${url%%'?'*}
+    # Get the last segment
+    url=${url##*/}
+    if [[ $url != *.* ]]; then
+        # It has no extension?
+        return 1
+    fi
+    # Get the extension
+    _ans=${url##*.}
+}
+
+# Convert a Unix time to a human-readable string.
+# TAKES:
+#     $1 — Unix time
+unixtime_to_str_() {
+    # This could theoretically be rewritten without forking.
+    _ans=$(date +'%Y-%m-%d %H:%M:%S' --utc --date=@"$1")
+}
+
+# PRINTS:
+#     tmux 'default-shell' option value.
+get_tmux_default_shell() {
+    tmux \
+        start-server \; \
+        show-options -gv default-shell
+}
+
+# Waits for user confirmation to continue.
+pause() {
+    echo >&2 -n 'Press ENTER to continue…'
+    read -r
+}
+
+# Prints a message, calls 'pause' if the script is running in a self-launched
+# tmux session, and then exits with a non-zero code.
+# TAKES:
+#     $@ — message
+die() {
+    printf >&2 '%s\n' "$@"
+    if (( option_go_ahead )); then
+        pause
+    fi
+    exit 1
+}
+
+################################################################################
+
+usage() {
+    echo >&2 "\
+USAGE: ${0##*/} [-G] [-T <access token>] [-n] [-y <youtube-dl argument> [-y ...]] { audio | video } <vkmedia subparser args>
+    -G: used internally, don't use.
+    -T: access token to pass to vkmedia.
+    -n: don't use tmux.
+    -y: pass an argument to youtube-dl."
+    exit 2
+}
+
+all_args=( "$@" )
+
+option_go_ahead=0
+option_no_tmux=0
+unset option_access_token
+unset option_mode
+option_ytdl_args=()
+while getopts 'GT:y:' option; do
+    case "$option" in
+        n) option_no_tmux=1 ;;
+        G) option_go_ahead=1 ;;
+        T) option_access_token=$OPTARG ;;
+        y) option_ytdl_args+=( "$OPTARG" ) ;;
+        *) usage ;;
+    esac
+done
+shift "$(( OPTIND - 1 ))"
+if (( $# < 2 )); then
+    usage
+fi
+option_mode=$1
+shift
+case "$option_mode" in
+    audio|video) ;;
+    *) usage ;;
+esac
+
+################################################################################
+
+declare -i use_tmux=0
+
+if has tmux && (( ! option_no_tmux )); then
+    use_tmux=1
+    if ! (( option_go_ahead )); then
+        default_shell=$(get_tmux_default_shell) \
+            || die "Can't get tmux default shell."
+        ret command escape_for_bash_ \
+            exec -- "$0" -G "${all_args[@]}"
+        TMUX='' exec tmux \
+            start-server \; \
+            set-option -g default-shell "$BASH" \; \
+            new-session "$command" \; \
+            set-option -g default-shell "$default_shell" \
+                || die "Can't launch tmux."
+    fi
+fi
+
+################################################################################
+
+IFS= read -rd '' dirname < <(dirname -z -- "$0")
+
+vkmedia=( "$dirname"/vkmedia )
+
+if ! [[ -x ${vkmedia[0]} ]]; then
+    die "E: '${vkmedia[0]}' does not exist or is not an executable file."
+fi
+
+if [[ -v option_access_token ]]; then
+    vkmedia+=( -T "$option_access_token" )
+fi
+
+################################################################################
+
+declare -a pretty_names=() urls=() menu_args=() infos=()
+declare -i counter=0
+
+case "$option_mode" in
+audio)
+    vkmedia_format='{url};{duration};{lyrics_id},{owner_id};{artist} — {title}'
+    ;;
+video)
+    vkmedia_format='{player};{duration};{date};{title} — {description}'
+    ;;
+esac
+while IFS=';' read -r url seconds info pretty_name; do
+    ret mmss to_mmss_ "$seconds"
+    ret pretty_name vkmedia_unescape_ "$pretty_name"
+    urls+=( "$url" )
+    pretty_names+=( "$pretty_name" )
+    menu_args+=( "$(( counter++ ))" "[$mmss] $pretty_name" )
+    infos+=( "$info" )
+done < <("${vkmedia[@]}" "$option_mode" -f "$vkmedia_format" "$@")
+
+################################################################################
+
+if ! (( ${#urls[@]} )); then
+    die "E: nothing found (or something)."
+fi
+
+################################################################################
+
+GENERIC_PLAYERS=( 'mpv --no-ytdl' mplayer2 mplayer )
+AUDIO_PLAYERS=( amarok audacious banshee clementine deadbeef exaile rhythmbox
+                xmms mpg123 )
+VIDEO_PLAYERS=( bomi dragon kaffeine parole totem vlc )
+unset player downloader
+case "$option_mode" in
+audio)
+    ret player select_binary_ \
+        ${PLAYER:+"$PLAYER"} \
+        "${GENERIC_PLAYERS[@]}" "${AUDIO_PLAYERS[@]}" "${VIDEO_PLAYERS[@]}"
+    ;;
+video)
+    ret player select_binary_ \
+        ${PLAYER:+"$PLAYER"} \
+        "${GENERIC_PLAYERS[@]}" "${VIDEO_PLAYERS[@]}"
+    ;;
+esac
+ret downloader select_downloader_ 'Mozilla/5.0'
+
+ytdl_get_url() {
+    echo >&2 "I: invoking youtube-dl…"
+    youtube-dl "${option_ytdl_args[@]}" -g "$1"
+}
+
+# TAKES:
+#     $1 — entry index
+play() {
+    if ! [[ -v player ]]; then
+        echo >&2 "E: player wasn't auto-detected."
+        pause
+        return
+    fi
+    local url=${urls[$1]}
+    if [[ $option_mode == video ]]; then
+        if ! url=$(ytdl_get_url "$url"); then
+            pause
+            return
+        fi
+    fi
+    if ! command -- "${player[@]}" "$url"; then
+        pause
+    fi
+}
+
+# TAKES:
+#     $1 — entry index
+download() {
+    if ! [[ -v downloader ]]; then
+        echo >&2 "E: downloader wasn't auto-detected."
+        pause
+        return
+    fi
+    local url=${urls[$1]}
+    if [[ $option_mode == video ]]; then
+        if ! url=$(ytdl_get_url "$url"); then
+            pause
+            return
+        fi
+    fi
+    local extension
+    if ! ret extension get_url_extension_ "$url"; then
+        case "$option_mode" in
+            audio) extension=mp3 ;;
+            video) extension=mp4 ;;
+        esac
+    fi
+    local filename
+    ret filename make_filename_ "${pretty_names[$1]}" "$extension"
+    if (( use_tmux )); then
+        local default_shell
+        default_shell=$(get_tmux_default_shell) \
+            || die "Can't get tmux default shell."
+        local cmd
+        local alert_cmd='printf "\a"'
+        local pause_cmd='echo -n Press ENTER to continue…; read -r'
+        ret cmd escape_for_bash_ \
+            command -- "${downloader[@]}" "$filename" "$url"
+        tmux \
+            set-option -g default-shell "$BASH" \; \
+            new-window "$cmd && $alert_cmd || { $alert_cmd; $pause_cmd; }" \; \
+            set-option -g default-shell "$default_shell" \
+                || die "Can't open new tmux window."
+    else
+        if command -- "${downloader[@]}" "$filename" "$url"; then
+            printf '\a'
+        else
+            printf '\a'
+            pause
+        fi
+    fi
+}
+
+# TAKES:
+#     $1 — entry index
+#     $2 — lyrics id
+get_lyrics() {
+    local lyrics_id=$2
+    if [[ $lyrics_id == -1 ]]; then
+        echo >&2 "E: this track has no attached lyrics."
+        pause
+        return
+    fi
+    local lyrics_file
+    if ! lyrics_file=$(mktemp); then
+        pause
+        return
+    fi
+    _remove_lyrics_file() {
+        rm -- "$lyrics_file"
+    }
+    echo >&2 "I: getting lyrics…"
+    if ! "${vkmedia[@]}" get_lyrics "$lyrics_id" > "$lyrics_file"; then
+        _remove_lyrics_file
+        pause
+        return
+    fi
+    dialog \
+        --extra-button --extra-label Save \
+        --ok-label Back \
+        --textbox -- "$lyrics_file" 0 0
+    local exitcode=$?
+    clear
+    case "$exitcode" in
+        3) # “Extra” button (save)
+            local filename
+            ret filename make_filename_ "${pretty_names[$1]}" txt
+            if ! cp --backup -- "$lyrics_file" "$filename"; then
+                _remove_lyrics_file
+                pause
+                return
+            fi
+            dialog --msgbox "Saved as: $filename" 0 0
+            ;;
+        *) # “OK” button (back) (code 0) or anything else
+            ;;
+    esac
+    _remove_lyrics_file
+}
+
+# TAKES:
+#     $1 — entry index
+get_info() {
+    local IFS=','
+    local -a info=( ${infos[$1]} )
+    local -a lyrics_button_args=()
+    local message
+    case "$option_mode" in
+    audio)
+        local lyrics_id=${info[0]} owner_id=${info[1]}
+        local has_lyrics
+        if [[ $lyrics_id == -1 ]]; then
+            has_lyrics=No
+        else
+            has_lyrics="Yes (ID $lyrics_id)"
+            lyrics_button_args=( --extra-button --extra-label 'Get lyrics' )
+        fi
+        message="\
+Artist and title: ${pretty_names[$1]}
+Owner ID: $owner_id
+Has lyrics: $has_lyrics
+URL: ${urls[$1]}"
+        ;;
+    video)
+        local date=${info[0]}
+        ret date unixtime_to_str_ "$date"
+        message="\
+Title and description: ${pretty_names[$1]}
+Date: $date
+Player URL: ${urls[$1]}"
+        ;;
+    esac
+    dialog \
+        "${lyrics_button_args[@]}" \
+        --ok-label Back \
+        --msgbox -- "$message" 0 0
+    local exitcode=$?
+    clear
+    case "$exitcode" in
+        3) # “Extra” button (get lyrics)
+            get_lyrics "$1" "$lyrics_id"
+            ;;
+        *) # “OK” button (back) (code 0) or anything else
+            ;;
+    esac
+}
+
+################################################################################
+
+result=0
+while true; do
+    result=$(
+        dialog \
+            --output-fd 1 \
+            --default-item "$result" \
+            --no-tags \
+            --extra-button --extra-label Download \
+            --ok-label Play \
+            --help-button --help-label Info \
+            --menu 'Select an entry and an action:' \
+            0 0 0 \
+            "${menu_args[@]}")
+    exitcode=$?
+    clear
+    case "$exitcode" in
+    0) # “OK” button (play)
+        play "$result"
+        ;;
+    3) # “Extra” button (download)
+        download "$result"
+        ;;
+    2) # “Help” button (info)
+        result=${result#* } # Drop "HELP "
+        get_info "$result"
+        ;;
+    *) # “Cancel” button (code 1) or anything else
+        break
+        ;;
+    esac
+done

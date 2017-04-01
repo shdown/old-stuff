@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+IFS= read -rd '' dirname < <(dirname -z -- "$0")
+cd -- "$dirname"/.. || exit "$?"
+
+shopt -s nullglob
+for testfile in tests/test_*.py; do
+    python3 -m unittest "$testfile" || exit "$?"
+done
+for testfile in tests/test_*.bash; do
+    bash "$testfile" || exit "$?"
+done
