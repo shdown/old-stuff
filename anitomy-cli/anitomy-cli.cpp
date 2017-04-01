@@ -8,7 +8,7 @@
 #include <cstring> // strcmp
 
 bool extract_season = false, extract_volume = false;
-wchar_t delimiter = '\n';
+wchar_t delimiter = L'\n';
 
 class Info {
 private:
@@ -16,17 +16,31 @@ private:
     std::vector<std::wstring> season_;
     std::vector<std::wstring> volume_;
 
+    static int compareWstrVecs_(const std::vector<std::wstring> &a,
+                                const std::vector<std::wstring> &b)
+    {
+        const auto na = a.size();
+        const auto nb = b.size();
+        const auto nmin = std::min(na, nb);
+        for(decltype(a.size()) i = 0; i < nmin; ++i) {
+            if(int r = a[i].compare(b[i])) {
+                return r;
+            }
+        }
+        return na < nb ? -1 : (na > nb ? 1 : 0);
+    }
+
 public:
     Info(const anitomy::Elements &elems)
-        : episode_(std::move(elems.get_all(anitomy::kElementEpisodeNumber)))
+        : episode_(elems.get_all(anitomy::kElementEpisodeNumber))
         , season_()
         , volume_()
     {
         if(extract_season) {
-            season_ = std::move(elems.get_all(anitomy::kElementAnimeSeason));
+            season_ = elems.get_all(anitomy::kElementAnimeSeason);
         }
         if(extract_volume) {
-            volume_ = std::move(elems.get_all(anitomy::kElementVolumeNumber));
+            volume_ = elems.get_all(anitomy::kElementVolumeNumber);
         }
     }
 
@@ -38,14 +52,14 @@ public:
     }
 
     bool operator <(const Info &that) const {
-        if(volume_ < that.volume_) {
-            return true;
+        if(int r = compareWstrVecs_(volume_, that.volume_)) {
+             return r < 0;
         }
-        if(season_ < that.season_) {
-            return true;
+        if(int r = compareWstrVecs_(season_, that.season_)) {
+             return r < 0;
         }
-        if(episode_ < that.episode_) {
-            return true;
+        if(int r = compareWstrVecs_(episode_, that.episode_)) {
+             return r < 0;
         }
         return false;
     }
@@ -59,13 +73,12 @@ public:
 };
 
 std::wstring wbasename(const std::wstring &s) {
-    size_t i = s.find_last_not_of(L"/");
+    const size_t i = s.find_last_not_of(L"/");
     if(i == std::wstring::npos) {
         return s.empty() ? L"." : L"/";
     }
-    size_t j = s.find_last_of(std::wstring(L"/"), i);
-    size_t from = (j == std::wstring::npos) ? 0 : j+1;
-    return s.substr(from, i-from+1);
+    const size_t from = 1 + s.find_last_of(L"/", i); /* std::wstring::npos + 1 == 0 */
+    return s.substr(from, i - from + 1);
 }
 
 bool do_attach() {
@@ -98,7 +111,7 @@ bool do_attach() {
     std::sort(subs.begin(), subs.end());
 
     bool first = true;
-    for(const std::wstring &video : videos) {
+    for(const auto &video : videos) {
         if(!first) {
             std::wcout << delimiter;
         }
@@ -140,10 +153,10 @@ bool do_sort() {
             unparseable.emplace_back(line);
             continue;
         }
-        parsed.emplace_back(std::move(Info(anitomy.elements())), line);
+        parsed.emplace_back(Info(anitomy.elements()), line);
     }
     std::sort(parsed.begin(), parsed.end());
-    for(const std::wstring &line : unparseable) {
+    for(const auto &line : unparseable) {
         std::wcout << line << delimiter;
     }
     for(const auto &p : parsed) {
@@ -167,7 +180,7 @@ int main(int argc, char **argv) {
             extract_volume = true;
             break;
         case 'z':
-            delimiter = '\0';
+            delimiter = L'\0';
             break;
         default:
             usage();
