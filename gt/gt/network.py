@@ -13,11 +13,11 @@ def _calc_tk(text):
     """
     def calc_lr(a, b):
         # pylint: disable=invalid-name
-        for c in range(0, len(b)-2, 3):
-            d = b[c+2]
+        for c in range(0, len(b) - 2, 3):
+            d = b[c + 2]
             d = ord(d) - 87 if d >= 'a' else int(d)
             xa = ctypes.c_uint32(a).value
-            d = xa >> d if b[c+1] == '+' else xa << d
+            d = xa >> d if b[c + 1] == '+' else xa << d
             a = a + d & 4294967295 if b[c] == '+' else a ^ d
         return ctypes.c_int32(a).value
 
