@@ -1,5 +1,7 @@
 A command-line interface for [anitomy](https://github.com/erengy/anitomy).
 
+`resume.zsh` is a script that uses `anitomy-cli` and [this mpv script](https://github.com/shdown/old-stuff/blob/master/mpv-scripts/re.lua) to sort video files in a given directory, and either start or resume playback from the position you quit on.
+
 (TODO: write a man page.)
 
 ````
