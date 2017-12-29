@@ -1,0 +1,65 @@
+# These can only occur in canvas buttons and get replaced with other tokens
+# once a button is pressed:
+ID_INPUT_BRACES TYPE_INPUT_SPECIFIC
+
+# These can only occur after digit parts merging:
+ID_VALUE       TYPE_VALUE
+ID_UNARY_MINUS TYPE_OP           89 1 R a.neg();
+ID_MINUS       TYPE_OP           10 2 L a.sub(b);
+
+# These can only occur before digit parts merging:
+# Digit parts
+ID_ZERO                   TYPE_DIGIT_PART
+ID_ONE                    TYPE_DIGIT_PART
+ID_TWO                    TYPE_DIGIT_PART
+ID_THREE                  TYPE_DIGIT_PART
+ID_FOUR                   TYPE_DIGIT_PART
+ID_FIVE                   TYPE_DIGIT_PART
+ID_SIX                    TYPE_DIGIT_PART
+ID_SEVEN                  TYPE_DIGIT_PART
+ID_EIGHT                  TYPE_DIGIT_PART
+ID_NINE                   TYPE_DIGIT_PART
+ID_PERIOD                 TYPE_DIGIT_PART
+# "Minus of unknown arity"
+ID_MINUS_OF_UNKNOWN_ARITY TYPE_MINUS_OF_UNKNOWN_ARITY
+# Constants
+ID_E                      TYPE_CONSTANT :E
+ID_PI                     TYPE_CONSTANT :PI
+ID_EPS                    TYPE_CONSTANT :MIN
+
+# These can only occur before infix-to-postfix conversion:
+ID_OPENING_BRACE TYPE_OPENING_BRACE
+ID_CLOSING_BRACE TYPE_CLOSING_BRACE
+
+# 'Normal' tokens:
+ID_PLUS              TYPE_OP     10 2 L a.add(b);
+ID_MODULUS           TYPE_OP     20 2 L a.mod(b);
+ID_MUL               TYPE_OP     20 2 L a.mul(b);
+ID_DIV               TYPE_OP     20 2 L a.div(b);
+ID_FACT              TYPE_OP     42 1 L a.fact();
+ID_POW               TYPE_OP     30 2 R a.pow(b);
+ID_SQR               TYPE_OP     89 1 L a.sqr();
+ID_SQRT              TYPE_OP     90 1 R a.sqrt();
+
+ID_SIN   TYPE_OP                 90 1 R AngleUnitConverter.toRadians(a); a.sin();
+ID_ASIN  TYPE_OP                 90 1 R a.asin(); AngleUnitConverter.fromRadians(a);
+ID_LN    TYPE_OP                 90 1 R a.ln();
+ID_COS   TYPE_OP                 90 1 R AngleUnitConverter.toRadians(a); a.cos();
+ID_ACOS  TYPE_OP                 90 1 R a.acos(); AngleUnitConverter.fromRadians(a);
+ID_EXP   TYPE_OP                 90 1 R a.exp();
+ID_TAN   TYPE_OP                 90 1 R AngleUnitConverter.toRadians(a); a.tan();
+ID_ATAN  TYPE_OP                 90 1 R a.atan(); AngleUnitConverter.fromRadians(a);
+ID_COT   TYPE_OP                 90 1 R AngleUnitConverter.toRadians(a); a.tan(); a.recip();
+ID_ACOT  TYPE_OP                 90 1 R a.recip(); a.atan(); AngleUnitConverter.fromRadians(a);
+
+ID_FLOOR TYPE_OP                 90 1 R a.floor();
+ID_ABS   TYPE_OP                 90 1 R a.abs();
+ID_SGN   TYPE_OP                 90 1 R if(a.isFinite() && !a.isZero()) a.assign(a.isNegative() ? -1 : 1);
+ID_ROUND TYPE_OP                 90 1 R a.round();
+ID_AND   TYPE_OP                  9 2 R a.and(b);
+ID_CEIL  TYPE_OP                 90 1 R a.ceil();
+ID_OR    TYPE_OP                  7 2 R a.or(b);
+ID_ANS   TYPE_VARIABLE
+ID_FRAC  TYPE_OP                 90 1 R a.frac();
+ID_XOR   TYPE_OP                  8 2 R a.xor(b);
+ID_X     TYPE_VARIABLE
