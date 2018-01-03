@@ -1,8 +1,8 @@
-function show_current_ssid()
+local function show_current_ssid()
     mp.osd_message("“secondary-sid” is set to “" .. mp.get_property("secondary-sid", "") .. "”")
 end
 
-function get_ssid_info()
+local function get_ssid_info()
     local cur_sid = mp.get_property("sid")
     local cur_ssid = mp.get_property("secondary-sid")
     local available_ssids = {}
@@ -22,7 +22,7 @@ function get_ssid_info()
     return available_ssids, cur_ssid_idx
 end
 
-function change_ssid(direction)
+local function change_ssid(direction)
     local available_ssids, cur_ssid_idx = get_ssid_info()
     if #available_ssids == 0 then
         mp.osd_message('No candidates for secondary subtitle!')

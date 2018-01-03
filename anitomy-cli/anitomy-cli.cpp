@@ -7,8 +7,8 @@
 #include <unistd.h> // getopt
 #include <cstring> // strcmp
 
-bool extract_season = false, extract_volume = false;
-wchar_t delimiter = L'\n';
+static bool extract_season = false, extract_volume = false;
+static wchar_t delimiter = L'\n';
 
 class Info {
 private:
@@ -16,13 +16,14 @@ private:
     std::vector<std::wstring> season_;
     std::vector<std::wstring> volume_;
 
-    static int compareWstrVecs_(const std::vector<std::wstring> &a,
-                                const std::vector<std::wstring> &b)
+    static int compare_wstr_vectors_(
+        const std::vector<std::wstring> &a,
+        const std::vector<std::wstring> &b)
     {
-        const auto na = a.size();
-        const auto nb = b.size();
-        const auto nmin = std::min(na, nb);
-        for(decltype(a.size()) i = 0; i < nmin; ++i) {
+        const size_t na = a.size();
+        const size_t nb = b.size();
+        const size_t nmin = std::min(na, nb);
+        for(size_t i = 0; i < nmin; ++i) {
             if(int r = a[i].compare(b[i])) {
                 return r;
             }
@@ -52,13 +53,13 @@ public:
     }
 
     bool operator <(const Info &that) const {
-        if(int r = compareWstrVecs_(volume_, that.volume_)) {
+        if(int r = compare_wstr_vectors_(volume_, that.volume_)) {
              return r < 0;
         }
-        if(int r = compareWstrVecs_(season_, that.season_)) {
+        if(int r = compare_wstr_vectors_(season_, that.season_)) {
              return r < 0;
         }
-        if(int r = compareWstrVecs_(episode_, that.episode_)) {
+        if(int r = compare_wstr_vectors_(episode_, that.episode_)) {
              return r < 0;
         }
         return false;
@@ -72,7 +73,7 @@ public:
     }
 };
 
-std::wstring wbasename(const std::wstring &s) {
+static std::wstring wbasename(const std::wstring &s) {
     const size_t i = s.find_last_not_of(L"/");
     if(i == std::wstring::npos) {
         return s.empty() ? L"." : L"/";
@@ -81,7 +82,7 @@ std::wstring wbasename(const std::wstring &s) {
     return s.substr(from, i - from + 1);
 }
 
-bool do_attach() {
+static bool do_attach() {
     anitomy::Anitomy anitomy;
     anitomy.options().parse_episode_title = false;
     anitomy.options().parse_file_extension = false;
@@ -140,7 +141,7 @@ bool do_attach() {
     return true;
 }
 
-bool do_sort() {
+static bool do_sort() {
     anitomy::Anitomy anitomy;
     anitomy.options().parse_episode_title = false;
     anitomy.options().parse_file_extension = false;
@@ -165,7 +166,7 @@ bool do_sort() {
     return true;
 }
 
-void usage() {
+static void usage() {
     std::cerr << "USAGE: anitomy-cli [-S] [-V] [-z] {sort | attach}\n";
     exit(EXIT_FAILURE);
 }
