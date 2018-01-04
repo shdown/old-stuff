@@ -25,8 +25,7 @@ elseif resp.status ~= 0 then
     error("sh exited with non-zero code: " .. resp.status)
 end
 local cur_file = nil
-for line0 in resp.stdout:gmatch(".-\0") do
-    local line = line0:sub(1, -2) -- drop trailing \0
+for line in resp.stdout:gmatch("(.-)\0") do
     if line == "" then
         cur_file = nil
     elseif not cur_file then
